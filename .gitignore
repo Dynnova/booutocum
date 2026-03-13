@@ -1,0 +1,4 @@
+node_modules/
+.env
+data/cosplay.db
+data/scrape_progress.json

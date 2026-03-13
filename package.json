@@ -1,0 +1,22 @@
+{
+  "name": "cosplay-search-bot",
+  "version": "2.0.0",
+  "description": "Discord bot for searching cosplay from galleryepic.xyz",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "concurrently \"node src/index.js\"",
+    "bot": "node src/index.js",
+    "scrape": "node src/scraper.js",
+    "export": "node src/export.js",
+    "push": "node src/export.js && git add web/public/cosplay.json && git commit -m \"update: cosplay data\" && git push",
+    "setup": "node src/setup-embed.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.14.1",
+    "better-sqlite3": "^9.4.3",
+    "axios": "^1.6.7",
+    "cheerio": "^1.0.0-rc.12",
+    "dotenv": "^16.4.1",
+    "concurrently": "^8.2.2"
+  }
+}
