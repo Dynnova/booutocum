@@ -36,7 +36,7 @@ async function sendPermanentEmbed() {
       .setStyle(ButtonStyle.Primary),
     new ButtonBuilder()
       .setLabel('📋 List')
-      .setStyle(ButtonStyle.Secondary)
+      .setStyle(ButtonStyle.Link)
       .setURL(`${process.env.WEB_URL || 'http://localhost:3000'}`),
   );
 
