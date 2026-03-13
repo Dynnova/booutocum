@@ -6,8 +6,7 @@ const path = require('path');
 const { upsertCosplay, getStats } = require('./database');
 
 const BASE_URL = process.env.BASE_URL || 'https://galleryepic.xyz';
-const THREADS = 5;
-const DETAIL_DELAY = 300;
+const THREADS = 8;
 const PROGRESS_FILE = path.join(__dirname, '../data/scrape_progress.json');
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -34,17 +33,15 @@ function saveProgress(progress) {
   fs.writeFileSync(PROGRESS_FILE, JSON.stringify(progress, null, 2));
 }
 
-// ─── Page queue (thread-safe via shift) ──────────────────────────────────────
+// ─── Page queue ──────────────────────────────────────────────────────────────
 
 class PageQueue {
-  constructor(pages) {
-    this.queue = [...pages];
-  }
+  constructor(pages) { this.queue = [...pages]; }
   next() { return this.queue.shift() ?? null; }
   get remaining() { return this.queue.length; }
 }
 
-// ─── Fetcher ─────────────────────────────────────────────────────────────────
+// ─── Axios fetcher ───────────────────────────────────────────────────────────
 
 async function fetchHtml(url, retries = 3) {
   for (let i = 0; i < retries; i++) {
@@ -57,6 +54,56 @@ async function fetchHtml(url, retries = 3) {
   }
   return null;
 }
+
+// ─── Puppeteer: fetch all images dengan klik "More" ──────────────────────────
+
+async function fetchAllImages(browser, pageUrl) {
+  const page = await browser.newPage();
+  try {
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
+    
+    // Block resource yang tidak perlu biar lebih cepat
+    await page.setRequestInterception(true);
+    page.on('request', req => {
+      const type = req.resourceType();
+      if (['stylesheet', 'font', 'media'].includes(type)) req.abort();
+      else req.continue();
+    });
+
+    await page.goto(pageUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    
+    // Tunggu gambar pertama muncul
+    await page.waitForSelector('img[src*="static.galleryepic.xyz/image"]', { timeout: 15000 }).catch(() => {});
+
+    // Klik "More" sampai habis
+    // Klik "More" sampai habis
+	while (true) {
+	  const clicked = await page.evaluate(() => {
+		const btn = [...document.querySelectorAll('button')]
+		  .find(b => b.textContent.trim() === 'More' && !b.disabled);
+		if (!btn) return false;
+		btn.click();
+		return true;
+	  });
+	  if (!clicked) break;
+	  await sleep(1500);
+	}
+
+    const imgUrls = await page.evaluate(() => {
+      const imgs = document.querySelectorAll('img[src*="static.galleryepic.xyz/image"]');
+      return [...new Set([...imgs].map(img => img.src))];
+    });
+
+    return imgUrls;
+  } catch (err) {
+    console.error(`\n⚠️ Puppeteer error for ${pageUrl}: ${err.message}`);
+    return [];
+  } finally {
+    await page.close();
+  }
+}
+
+// ─── Parse list page ─────────────────────────────────────────────────────────
 
 function parseListPage(html) {
   const $ = cheerio.load(html);
@@ -86,6 +133,8 @@ function parseListPage(html) {
 
   return items;
 }
+
+// ─── Fetch metadata ──────────────────────────────────────────────────────────
 
 async function fetchDetail(id) {
   const html = await fetchHtml(`${BASE_URL}/en/cosplay/${id}`);
@@ -123,7 +172,7 @@ async function detectMaxPage() {
 
 // ─── Worker ──────────────────────────────────────────────────────────────────
 
-async function worker(workerId, queue, progress, stats) {
+async function worker(workerId, queue, progress, stats, browser) {
   while (true) {
     const page = queue.next();
     if (page === null) break;
@@ -140,8 +189,12 @@ async function worker(workerId, queue, progress, stats) {
 
     for (const item of items) {
       try {
+        // Fetch metadata via axios
         const detail = await fetchDetail(item.id);
-        await sleep(DETAIL_DELAY);
+        await sleep(300);
+
+        // Fetch semua gambar via Puppeteer
+        const imageUrls = await fetchAllImages(browser, item.page_url);
 
         upsertCosplay({
           id: item.id,
@@ -152,10 +205,12 @@ async function worker(workerId, queue, progress, stats) {
           cover_url: item.cover_url,
           page_url: item.page_url,
           photo_count: item.photo_count,
+          image_urls: imageUrls.length ? JSON.stringify(imageUrls) : null,
           created_at: new Date().toISOString(),
         });
 
         stats.saved++;
+        if (imageUrls.length) stats.images += imageUrls.length;
       } catch {
         stats.failed++;
       }
@@ -164,7 +219,7 @@ async function worker(workerId, queue, progress, stats) {
     }
 
     progress.completed.push(page);
-    saveProgress(progress); // simpan progress tiap page selesai
+    saveProgress(progress);
   }
 }
 
@@ -174,14 +229,16 @@ function printStatus(stats, queue) {
   const elapsed = ((Date.now() - stats.startTime) / 1000).toFixed(0);
   const rate = (stats.saved / (elapsed || 1)).toFixed(1);
   process.stdout.write(
-    `\r💾 Saved: ${String(stats.saved).padStart(5)} | ❌ Failed: ${stats.failed} | 📃 Queue: ${String(queue.remaining).padStart(4)} pages | ⏱️ ${elapsed}s | ${rate}/s    `
+    `\r💾 Saved: ${String(stats.saved).padStart(5)} | 🖼️ Images: ${String(stats.images).padStart(6)} | ❌ Failed: ${stats.failed} | 📃 Queue: ${String(queue.remaining).padStart(4)} | ⏱️ ${elapsed}s | ${rate}/s    `
   );
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 async function scrapeAll(startPage, endPage, threads) {
-  console.log('🚀 Starting multi-thread scraper...');
+  const puppeteer = require('puppeteer');
+
+  console.log('🚀 Starting scraper with Puppeteer image support...');
   console.log(`🧵 Threads: ${threads}`);
 
   const maxPage = endPage || await detectMaxPage();
@@ -190,50 +247,54 @@ async function scrapeAll(startPage, endPage, threads) {
   const progress = loadProgress();
   const completedSet = new Set(progress.completed);
 
-  // Hanya scrape halaman yang belum selesai
   const todo = [];
   for (let p = startPage; p <= maxPage; p++) {
     if (!completedSet.has(p)) todo.push(p);
   }
 
   if (todo.length === 0) {
-    console.log('✅ Semua halaman sudah selesai di-scrape!');
+    console.log('✅ Semua halaman sudah selesai!');
     return;
   }
 
-  console.log(`⏭️  Skip: ${completedSet.size} halaman (sudah selesai)`);
+  console.log(`⏭️  Skip: ${completedSet.size} halaman`);
   console.log(`📋 Todo: ${todo.length} halaman\n`);
 
-  const queue = new PageQueue(todo);
-  const stats = { saved: 0, failed: 0, startTime: Date.now() };
+  // Launch Puppeteer (1 browser, banyak tab)
+  const browser = await puppeteer.launch({
+	  headless: true,
+	  protocolTimeout: 120000,
+	  args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+	});
 
-  // Spawn N workers parallel
-  await Promise.all(
-    Array.from({ length: threads }, (_, i) => worker(i + 1, queue, progress, stats))
-  );
+  const queue = new PageQueue(todo);
+  const stats = { saved: 0, failed: 0, images: 0, startTime: Date.now() };
+
+  try {
+    await Promise.all(
+      Array.from({ length: threads }, (_, i) => worker(i + 1, queue, progress, stats, browser))
+    );
+  } finally {
+    await browser.close();
+  }
 
   console.log('\n\n' + '─'.repeat(60));
   console.log(`✅ Selesai! Total di DB: ${getStats().total}`);
+  console.log(`🖼️  Total images: ${stats.images}`);
   console.log(`📃 Pages selesai: ${progress.completed.length}/${maxPage}`);
   if (progress.failed.length > 0) {
-    console.log(`❌ Pages gagal (${progress.failed.length}): ${progress.failed.slice(0, 20).join(', ')}...`);
-    console.log(`   Jalankan ulang untuk retry otomatis.`);
+    console.log(`❌ Pages gagal (${progress.failed.length}): ${progress.failed.slice(0, 20).join(', ')}`);
   }
 }
 
 // ─── CLI args ─────────────────────────────────────────────────────────────────
-// Usage:
-//   npm run scrape                  → scrape semua
-//   node src/scraper.js 1 50        → page 1-50
-//   node src/scraper.js 1 50 3      → page 1-50, 3 threads
-//   node src/scraper.js --reset     → reset progress lalu scrape ulang
 
 const args = process.argv.slice(2);
 
 if (args.includes('--reset')) {
   if (fs.existsSync(PROGRESS_FILE)) {
     fs.unlinkSync(PROGRESS_FILE);
-    console.log('🔄 Progress file di-reset!\n');
+    console.log('🔄 Progress di-reset!\n');
   }
 }
 

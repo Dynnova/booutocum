@@ -1,6 +1,7 @@
 require('dotenv').config();
 const { Client, GatewayIntentBits, Events } = require('discord.js');
 const { handlePermanentButton, handleSearchSubmit } = require('./searchHandler');
+const { deleteExpiredThreads } = require('./threadCache');
 
 const client = new Client({
   intents: [
@@ -11,13 +12,10 @@ const client = new Client({
 
 client.on(Events.InteractionCreate, async interaction => {
   try {
-    // Tombol Search di embed permanen
     if (interaction.isButton()) {
       await handlePermanentButton(interaction);
       return;
     }
-
-    // Submit modal search
     if (interaction.isModalSubmit() && interaction.customId === 'search_modal') {
       await handleSearchSubmit(interaction);
       return;
@@ -27,12 +25,49 @@ client.on(Events.InteractionCreate, async interaction => {
   }
 });
 
-client.once(Events.ClientReady, c => {
+client.once(Events.ClientReady, async c => {
   console.log(`\n🤖 Bot ready! ${c.user.tag}`);
   console.log(`🔍 Search channel : ${process.env.CHANNEL_SEARCH}`);
   console.log(`🧵 Thread channel : ${process.env.THREAD_SEARCH}`);
   console.log(`🌐 Web list URL   : ${process.env.WEB_URL || 'http://localhost:3000'}`);
   c.user.setActivity('🔍 cosplay search');
+
+  // Cleanup expired threads saat bot start
+  const expired = deleteExpiredThreads();
+  if (expired.length) {
+    console.log(`🗑️  Deleted ${expired.length} expired thread cache(s)`);
+
+    // Hapus thread Discord yang expired
+    for (const row of expired) {
+      try {
+        const threadChannel = await c.channels.fetch(process.env.THREAD_SEARCH).catch(() => null);
+        if (!threadChannel) continue;
+        const thread = await threadChannel.threads.fetch(row.thread_id).catch(() => null);
+        if (thread) {
+          await thread.delete('Thread expired (14 hari tidak ada viewer)').catch(() => {});
+          console.log(`  🗑️  Deleted thread: ${row.thread_name}`);
+        }
+      } catch {}
+    }
+  }
+
+  // Cleanup setiap jam
+  setInterval(async () => {
+    const expired = deleteExpiredThreads();
+    if (!expired.length) return;
+
+    console.log(`🗑️  Hourly cleanup: ${expired.length} expired thread(s)`);
+    for (const row of expired) {
+      try {
+        const threadChannel = await c.channels.fetch(process.env.THREAD_SEARCH).catch(() => null);
+        if (!threadChannel) continue;
+        const thread = await threadChannel.threads.fetch(row.thread_id).catch(() => null);
+        if (thread) {
+          await thread.delete('Thread expired (14 hari tidak ada viewer)').catch(() => {});
+        }
+      } catch {}
+    }
+  }, 60 * 60 * 1000); // setiap 1 jam
 });
 
 client.login(process.env.DISCORD_TOKEN);

@@ -25,6 +25,7 @@ function initSchema() {
       cover_url TEXT,
       page_url TEXT,
       photo_count INTEGER DEFAULT 0,
+      image_urls TEXT DEFAULT NULL,
       created_at TEXT,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
@@ -55,13 +56,18 @@ function initSchema() {
       VALUES (new.id, new.id, new.title, new.coser, new.character, new.parody);
     END;
   `);
+
+  // Tambah kolom image_urls kalau belum ada (untuk DB lama)
+  try {
+    db.exec(`ALTER TABLE cosplay ADD COLUMN image_urls TEXT DEFAULT NULL`);
+  } catch {}
 }
 
 function upsertCosplay(data) {
   const db = getDb();
   const stmt = db.prepare(`
-    INSERT INTO cosplay (id, title, coser, character, parody, cover_url, page_url, photo_count, created_at)
-    VALUES (@id, @title, @coser, @character, @parody, @cover_url, @page_url, @photo_count, @created_at)
+    INSERT INTO cosplay (id, title, coser, character, parody, cover_url, page_url, photo_count, image_urls, created_at)
+    VALUES (@id, @title, @coser, @character, @parody, @cover_url, @page_url, @photo_count, @image_urls, @created_at)
     ON CONFLICT(id) DO UPDATE SET
       title = excluded.title,
       coser = excluded.coser,
@@ -69,6 +75,7 @@ function upsertCosplay(data) {
       parody = excluded.parody,
       cover_url = excluded.cover_url,
       photo_count = excluded.photo_count,
+      image_urls = excluded.image_urls,
       updated_at = CURRENT_TIMESTAMP
   `);
   return stmt.run(data);
@@ -77,7 +84,6 @@ function upsertCosplay(data) {
 function searchCosplay(query, limit = 5, offset = 0) {
   const db = getDb();
 
-  // FTS search
   try {
     const results = db.prepare(`
       SELECT c.* FROM cosplay c
@@ -95,7 +101,6 @@ function searchCosplay(query, limit = 5, offset = 0) {
 
     return { results, total: total.count };
   } catch {
-    // Fallback ke LIKE jika FTS error
     const like = `%${query}%`;
     const results = db.prepare(`
       SELECT * FROM cosplay
