@@ -43,12 +43,7 @@
   }
   .btn-copy:hover { background: #5a6fd4; }
   .btn-copy.copied { background: #43b581; }
-  .btn-link {
-    background: #2a2a4a; color: #aaa; border: none; border-radius: 6px;
-    padding: 5px 8px; font-size: 11px; cursor: pointer; text-decoration: none;
-    display: inline-flex; align-items: center; transition: background .15s;
-  }
-  .btn-link:hover { background: #3a3a5a; color: #e0e0e0; }
+
   .pagination { display: flex; justify-content: center; align-items: center; gap: 6px; padding: 16px; flex-wrap: wrap; }
   .page-btn {
     background: #2a2a4a; color: #e0e0e0; border: 1px solid #3a3a5a;
@@ -112,13 +107,18 @@ function render(page) {
     return;
   }
 
-  grid.innerHTML = items.map(item => {
+  grid.innerHTML = '';
+  const frag = document.createDocumentFragment();
+
+  items.forEach(item => {
     const coser = esc(item.coser || 'Unknown');
     const sub = esc(item.character || item.parody || '');
     const photos = item.photo_count > 0 ? `[${item.photo_count}P]` : '';
 
-    return `<div class="card">
-      <img class="card-img" src="${item.cover_url}" alt="${coser}" loading="lazy"
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.innerHTML = `
+      <img class="card-img" src="${esc(item.cover_url)}" alt="${coser}" loading="lazy"
         onerror="this.style.background='#2a2a3e';this.removeAttribute('src')">
       <div class="card-body">
         <div class="card-name">${coser} <span style="color:#555;font-weight:400;font-size:10px">${photos}</span></div>
@@ -127,10 +127,12 @@ function render(page) {
       </div>
       <div class="card-footer">
         <button class="btn-copy" onclick="copyId(this, ${item.id}, '${coser.replace(/'/g,"\\'")}')">📋 Copy ID</button>
-        <a class="btn-link" href="${item.page_url}" target="_blank">🔗</a>
       </div>
-    </div>`;
-  }).join('');
+    `;
+    frag.appendChild(card);
+  });
+
+  grid.appendChild(frag);
 
   renderPagination(page, totalPages);
 }
@@ -152,7 +154,16 @@ function renderPagination(page, totalPages) {
     ).join('')}
     <button class="page-btn" onclick="render(${page+1})" ${page>=totalPages?'disabled':''}>▶</button>
     <span class="page-info">${page}/${totalPages}</span>
+    <input type="number" id="pageInput" min="1" max="${totalPages}" placeholder="page" style="width:60px;padding:4px;border-radius:4px;border:1px solid #3a3a5a;background:#2a2a4a;color:#fff">
+    <button class="page-btn" onclick="goToPage(${totalPages})">Go</button>
   `;
+}
+
+function goToPage(totalPages) {
+  const val = parseInt(document.getElementById('pageInput').value);
+  if (!val) return;
+  const page = Math.max(1, Math.min(totalPages, val));
+  render(page);
 }
 
 function copyId(btn, id, name) {
